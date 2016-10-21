@@ -217,10 +217,10 @@ defmodule Socket.Web do
   """
   @spec connect!(Socket.Address.t, :inet.port_number, Keyword.t) :: t | no_return
   def connect!(address, port, options) do
-    mod = if options[:secure] do
-      Socket.SSL
+    {mod, proxy_type} = if options[:secure] do
+      {Socket.SSL, :https_proxy}
     else
-      Socket.TCP
+      {Socket.TCP, :http_proxy}
     end
 
     path       = options[:path] || "/"
@@ -230,7 +230,21 @@ defmodule Socket.Web do
     key        = :base64.encode(options[:key] || "fork the dongles")
     headers    = Enum.map(options[:headers] || %{}, fn({ k, v }) -> ["#{k}: #{v}", "\r\n"] end)
 
-    client = mod.connect!(address, port)
+    client = case proxy_type |> to_string |> System.get_env |> URI.parse do
+               %URI{host: proxy_host, port: proxy_port} when not is_nil(proxy_host) ->
+                 proxy = mod.connect!(proxy_host, proxy_port)
+                 proxy |> Socket.packet!(:raw)
+                 proxy |> Socket.Stream.send!([
+                   "CONNECT #{address}:#{port} HTTP/1.1", "\r\n",
+                   "\r\n"])
+                 proxy |> Socket.packet(:http_bin)
+                 { :http_response, _, 200, _} = proxy |> Socket.Stream.recv!(options)
+                 :http_eoh = proxy |> Socket.Stream.recv!(options)
+                 proxy
+               _ ->
+                 mod.connect!(address,port)
+             end
+
     client |> Socket.packet!(:raw)
     client |> Socket.Stream.send!([
       "GET #{path} HTTP/1.1", "\r\n",
